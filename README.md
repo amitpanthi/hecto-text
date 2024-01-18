@@ -1,1 +1,3 @@
-Will add contents here in a bit
+# Hecto
+
+Just ```cargo run``` it
