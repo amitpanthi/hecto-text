@@ -1,6 +1,9 @@
 use std::cmp;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::Position;
+
+#[derive(Default)]
 pub struct Row {
     string: String,
     len: usize,
@@ -47,5 +50,49 @@ impl Row {
 
     pub fn update_length(&mut self)  {
         self.len = self.string[..].graphemes(true).count()
+    }
+
+    pub fn insert(&mut self, at: usize, c: char) {
+        if at > self.len() {
+            self.string.push(c);
+        } else {
+            let mut result: String = self.string[..].graphemes(true).take(at).collect();
+            let remaining_str: String = self.string[..].graphemes(true).skip(at).collect();
+            result.push(c);
+            result.push_str(&remaining_str);
+            self.string = result;    
+        }
+
+        self.update_length();
+    }
+
+    pub fn delete(&mut self, at: usize) {
+        if at >= self.len() {
+            return; // do nothing
+        } else {
+            let mut result: String = self.string[..].graphemes(true).take(at).collect();
+            let remaining_str: String = self.string[..].graphemes(true).skip(at + 1).collect();
+            result.push_str(&remaining_str);
+            self.string = result;
+        }
+
+        self.update_length();
+    }
+
+    pub fn append(&mut self, string_to_add: Row) {
+        self.string = format!("{}{}", self.string, string_to_add.string);
+        self.update_length();
+    }
+
+    pub fn split(&mut self, at: usize) -> Self {
+        let first_split: String = self.string[..].graphemes(true).take(at).collect();
+        let second_split: String = self.string[..].graphemes(true).skip(at).collect();
+        self.string = first_split;
+        self.update_length();
+        Self::from(&second_split[..])
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        return self.string.as_bytes()
     }
 }

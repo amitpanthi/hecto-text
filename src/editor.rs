@@ -66,7 +66,7 @@ impl Editor {
 
     pub fn default() -> Self {
         let args: Vec<String> = env::args().collect();
-        let mut initial_status = String::from("Tip: Press Ctrl-Q to quit.");
+        let mut initial_status = String::from("Tip: Press Ctrl-Q to quit, Ctrl-S to save.");
         let document = if args.len() > 1 {
             let file_name = &args[1];
             let file = Document::open(&file_name);
@@ -91,10 +91,40 @@ impl Editor {
         }
     }
 
+    fn save(&mut self) {
+        if self.document.file_name.is_none() {
+            let new_name = self.prompt("Save as: ").unwrap_or(None);
+            if new_name.is_none() {
+                self.status_message = StatusMessage::from("Need a file name to save!".to_string());
+                return;
+            } 
+        
+        self.document.file_name = new_name;
+        }
+
+        if self.document.save().is_ok() {
+            self.status_message = StatusMessage::from("File saved successfully!".to_string());
+        } else {
+            self.status_message = StatusMessage::from("There was an error saving this file!".to_string());
+        }
+    }
+
     fn process_keypress(&mut self) -> Result<(), std::io::Error> {
         let pressed_key = Terminal::read_key()?;
         match pressed_key {
             Key::Ctrl('q') => self.should_quit = true,
+            Key::Ctrl('s') => self.save(),
+            Key::Char(c) => {
+                self.document.insert(&self.cursor_position, c);
+                self.move_cursor(Key::Right);
+            },
+            Key::Delete => self.document.delete(&self.cursor_position),
+            Key::Backspace => {
+                if self.cursor_position.x > 0 || self.cursor_position.y > 0 {
+                    self.move_cursor(Key::Left);
+                    self.document.delete(&self.cursor_position);
+                }
+            }
             Key::Up 
             | Key::Down 
             | Key::Left 
@@ -202,6 +232,53 @@ impl Editor {
 
         Terminal::cursor_show();
         Terminal::flush()
+    }
+    
+    fn prompt(&mut self, prompt: &str) -> Result<Option<String>, std::io::Error> {
+        let mut result = String::new();
+        loop {
+            self.status_message = StatusMessage::from(format!("{}{}", prompt, result));
+            self.refresh_screen()?;
+            if let Key::Char(c) = Terminal::read_key()? {
+                if c == '\n' {
+                    self.status_message = StatusMessage::from(String::new());
+                    break;
+                }
+
+                if !c.is_control() {
+                    result.push(c);
+                }
+            }
+
+            match Terminal::read_key()? {
+                Key::Char('\n') => {
+                    break;
+                }
+                Key::Char(c) => {
+                    if !c.is_control() {
+                        result.push(c);
+                    }
+                },
+                Key::Esc => {
+                    result.truncate(0);
+                    break;
+                },
+                Key::Backspace => {
+                    if !result.is_empty() {
+                        result.truncate(result.len() - 1);
+                    }
+                },
+                _ => ()
+            }
+        }
+
+        self.status_message = StatusMessage::from(String::new());
+
+        if(result.is_empty()){
+            return Ok(None);
+        }
+
+        Ok(Some(result))
     }
 
     pub fn draw_row(&self, row: &Row) {
