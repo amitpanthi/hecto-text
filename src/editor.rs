@@ -15,13 +15,19 @@ use std::time::Duration;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const FG_COLOR: color::Rgb = color::Rgb(63, 63, 63);
 const STATUS_COLOR: color::Rgb = color::Rgb(239, 239, 239);
+const QUIT_TIMES: u8 = 3;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Position {
     pub x: usize,
     pub y: usize
 }
 
+#[derive(PartialEq, Copy, Clone)]
+pub enum SearchDirection {
+    Forward,
+    Backward,
+}
 pub struct StatusMessage {
     text: String,
     time: Instant,
@@ -42,6 +48,7 @@ pub struct Editor {
     document: Document,
     offset: Position,
     status_message: StatusMessage,
+    quit_times: u8,
 }
 
 impl Editor {
@@ -66,13 +73,12 @@ impl Editor {
 
     pub fn default() -> Self {
         let args: Vec<String> = env::args().collect();
-        let mut initial_status = String::from("Tip: Press Ctrl-Q to quit, Ctrl-S to save.");
-        let document = if args.len() > 1 {
-            let file_name = &args[1];
+        let mut initial_status = String::from("Tip: Ctrl-F -> Find | Ctrl-S -> Save | Ctrl-Q -> Quit");
+        let document = if let Some(file_name) = args.get(1) {
             let file = Document::open(&file_name);
             
-            if file.is_ok() {
-                file.unwrap()
+            if let Ok(file) = file {
+                file
             } else {
                 initial_status = format!("ERROR: Could not open file - {}", file_name);
                 Document::default()
@@ -88,12 +94,13 @@ impl Editor {
             document,
             offset: Position::default(),
             status_message: StatusMessage::from(initial_status),
+            quit_times: QUIT_TIMES,
         }
     }
 
     fn save(&mut self) {
         if self.document.file_name.is_none() {
-            let new_name = self.prompt("Save as: ").unwrap_or(None);
+            let new_name = self.prompt("Save as: ", |_, _, _| {}).unwrap_or(None);
             if new_name.is_none() {
                 self.status_message = StatusMessage::from("Need a file name to save!".to_string());
                 return;
@@ -109,11 +116,47 @@ impl Editor {
         }
     }
 
+    fn search(&mut self) {
+        let old_position = self.cursor_position.clone();
+        let mut direction = SearchDirection::Forward;
+
+        let query = self.prompt("Search (ESC to cancel, arrow keys to navigate): ", |editor, key, query|  {
+            let mut moved = false;
+            match key {
+                Key::Right | Key::Down => {
+                    editor.move_cursor(Key::Right);
+                    moved = true;
+                }
+                Key::Left | Key::Up => direction = SearchDirection::Backward,
+                _ => direction = SearchDirection::Forward,
+            }
+             if let Some(position) = editor.document.find(&query, &editor.cursor_position, direction) {
+                editor.cursor_position = position;
+                editor.scroll();
+             } else if moved {
+                editor.move_cursor(Key::Left);
+             }
+        }).unwrap_or(None);
+        
+        if query.is_none() {
+            self.cursor_position = old_position;
+            self.scroll();
+        }
+    }
+
     fn process_keypress(&mut self) -> Result<(), std::io::Error> {
         let pressed_key = Terminal::read_key()?;
         match pressed_key {
-            Key::Ctrl('q') => self.should_quit = true,
+            Key::Ctrl('q') => {
+                if self.document.is_dirty() && self.quit_times > 0 {
+                    self.status_message = StatusMessage::from(format!("Warning! Quitting without saving. Press Ctrl-Q {} more times to quit.", self.quit_times));
+                    self.quit_times -= 1;
+                    return Ok(());
+                } 
+                self.should_quit = true
+            },
             Key::Ctrl('s') => self.save(),
+            Key::Ctrl('f') => self.search(),
             Key::Char(c) => {
                 self.document.insert(&self.cursor_position, c);
                 self.move_cursor(Key::Right);
@@ -137,6 +180,10 @@ impl Editor {
         }
 
         self.scroll();
+        if self.quit_times < QUIT_TIMES { //Some button other than Ctrl-Q was pressed, so reset
+            self.quit_times = QUIT_TIMES;
+            self.status_message = StatusMessage::from(String::new());
+        }
         Ok(())
     }
 
@@ -234,23 +281,17 @@ impl Editor {
         Terminal::flush()
     }
     
-    fn prompt(&mut self, prompt: &str) -> Result<Option<String>, std::io::Error> {
+    fn prompt<C>(&mut self, prompt: &str, mut callback: C) -> Result<Option<String>, std::io::Error>
+    where
+        C: FnMut(&mut Self, Key, &String), {
         let mut result = String::new();
         loop {
             self.status_message = StatusMessage::from(format!("{}{}", prompt, result));
             self.refresh_screen()?;
-            if let Key::Char(c) = Terminal::read_key()? {
-                if c == '\n' {
-                    self.status_message = StatusMessage::from(String::new());
-                    break;
-                }
 
-                if !c.is_control() {
-                    result.push(c);
-                }
-            }
+            let key = Terminal::read_key()?;
 
-            match Terminal::read_key()? {
+            match key {
                 Key::Char('\n') => {
                     break;
                 }
@@ -265,11 +306,12 @@ impl Editor {
                 },
                 Key::Backspace => {
                     if !result.is_empty() {
-                        result.truncate(result.len() - 1);
+                        result.truncate(result.len().saturating_sub(1));
                     }
                 },
                 _ => ()
             }
+            callback(self, key, &result);
         }
 
         self.status_message = StatusMessage::from(String::new());
@@ -284,17 +326,18 @@ impl Editor {
     pub fn draw_row(&self, row: &Row) {
         let width = self.terminal.size().width as usize;
         let start = self.offset.x;
-        let end = self.offset.x + width;
+        let end = self.offset.x.saturating_add(width);
         let row = row.render(start, end);
         println!("{}\r", row);
     }
 
+    #[allow(clippy::integer_arithmetic, clippy::integer_division)]
     fn draw_rows(&self) {
         let height = self.terminal.size().height;
 
         for terminal_row in 0..height {
             Terminal::clear_current_line();
-            if let Some(row) = self.document.get_row(terminal_row as usize + self.offset.y) {
+            if let Some(row) = self.document.get_row(self.offset.y.saturating_add(terminal_row as usize)) {
                 self.draw_row(row);
             } else if self.document.is_empty() && terminal_row == height/3 {
                 self.print_welcome_message();
@@ -307,6 +350,7 @@ impl Editor {
     fn print_welcome_message(&self) {
         let mut welcome_message = format!("Welcome to Hecto v{}.\r", VERSION);
         let width =self.terminal.size().width as usize;
+        #[allow(clippy::integer_arithmetic, clippy::integer_division)]
         let padding = width.saturating_sub(welcome_message.len())/2; 
         let spaces = " ".repeat(padding);
         welcome_message = format!("~{}{}", spaces, welcome_message);
@@ -340,20 +384,22 @@ impl Editor {
         let mut status;
         let mut file_name = "[No file name]".to_string();
         let width = self.terminal.size().width as usize;
-
+        let modified_message = if self.document.is_dirty() {
+            "(modified)"
+        } else {
+            ""
+        };
+    
         if let Some(fname) = &self.document.file_name {
             file_name = fname.clone();
             file_name.truncate(20);
         }
 
-        status = format!("{} - {} lines", file_name, self.document.len());
+        status = format!("{} - {} lines {}", file_name, self.document.len(), modified_message);
         let line_indicator = format!("{}/{}", self.cursor_position.y.saturating_add(1), self.document.len());
+        #[allow(clippy::integer_arithmetic)]
         let status_len = status.len() + line_indicator.len();
-
-        if width > status_len {
-            status.push_str(&" ".repeat(width - status_len));
-        }
-
+        status.push_str(&" ".repeat(width.saturating_sub(status_len)));
         status = format!("{}{}", status, line_indicator);
         status.truncate(width);
         Terminal::set_bg_color(STATUS_COLOR);
