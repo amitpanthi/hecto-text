@@ -1,11 +1,13 @@
 use std::cmp;
 use unicode_segmentation::UnicodeSegmentation;
-
+use termion::color;
 use crate::{Position, SearchDirection};
+use crate::highlighting;
 
 #[derive(Default)]
 pub struct Row {
     string: String,
+    highlighting: Vec<highlighting::Type>,
     len: usize,
 }
 
@@ -13,6 +15,7 @@ impl From<&str> for Row {
     fn from(content: &str) -> Self {
         Self {
             string: String::from(content),
+            highlighting: Vec::new(),
             len: content.graphemes(true).count(),
         }
     }
@@ -22,19 +25,32 @@ impl Row {
     pub fn render(&self, start: usize, end: usize) -> String {
         let end = cmp::min(end, self.string.len());
         let start = cmp::min(start, end);
+        let mut current_highlighting = &highlighting::Type::None;
         let mut result = String::new();
         #[allow(clippy::integer_arithmetic)]
-        for grapheme in self.string[..]
+        for (index, grapheme) in self.string[..]
                 .graphemes(true)
+                .enumerate()
                 .skip(start)
                 .take(end-start) {
-            if grapheme == "\t" {
-                result.push_str(" ");
-            } else {
-                result.push_str(grapheme);
-            }
-        }
-        
+                        if let Some(c) = grapheme.chars().next() {
+                        let highlighting_type = self.highlighting.get(index).unwrap_or( &highlighting::Type::None);
+
+                        if current_highlighting != highlighting_type {
+                            current_highlighting = highlighting_type;
+                            let highlight_start = format!("{}", color::Fg(highlighting_type.to_color()));
+                            result.push_str(&highlight_start[..]);
+                        }
+                    
+                        if c == '\t' {
+                            result.push_str(" ");
+                        } else {
+                            result.push(c);
+                        }
+                    }
+                }
+        let highlight_end = format!("{}", color::Fg(color::Reset));
+        result.push_str(&highlight_end[..]);
         result
     }
 
@@ -113,6 +129,7 @@ impl Row {
 
         Self {
             string: splitted_str,
+            highlighting: Vec::new(),
             len: split_len,
         }
     }
@@ -122,7 +139,7 @@ impl Row {
     }
 
     pub fn find(&self, query: &str, at: usize, search_direction: SearchDirection) -> Option<usize> {
-        if at > self.len {
+        if at > self.len || query.is_empty(){
             return None;
         }
         
@@ -156,5 +173,57 @@ impl Row {
             }
         }
         None
+    }
+
+    pub fn highlight(&mut self, word: Option<&str>) {
+        let mut highlighting = Vec::new();
+        let chars: Vec<char> = self.string.chars().collect();
+        let mut matches = Vec::new();
+        let mut search_index = 0;
+
+        if let Some(word) = word {
+            while let Some(match_index) = self.find(word, search_index, SearchDirection::Forward) {
+                matches.push(match_index);
+                if let Some(next_index) = match_index.checked_add(word[..].graphemes(true).count()) {
+                    search_index = next_index;
+                } else {
+                    break; // eol
+                }
+            }
+        }
+
+        let mut index = 0;
+        let mut is_prev_separator = true;
+        while let Some(c) = chars.get(index) {
+            if let Some(word) = word {
+                if matches.contains(&index) {
+                    for _ in word[..].graphemes(true) {
+                        index += 1;
+                        highlighting.push(highlighting::Type::Match);
+                    }
+                    continue;
+                }
+            }
+
+            let prev_sep_highlight = if index > 0 {
+                #[allow(clippy::integer_arithmetic)]
+                highlighting.get(index - 1).unwrap_or(&highlighting::Type::None)
+            } else {
+                &highlighting::Type::None
+            };
+
+            if (c.is_ascii_digit() 
+            && (prev_sep_highlight == &highlighting::Type::Number || is_prev_separator))
+            || (c == &'.' && prev_sep_highlight == &highlighting::Type::Number) {
+                highlighting.push(highlighting::Type::Number);
+            } else {
+                highlighting.push(highlighting::Type::None);
+            }
+
+            is_prev_separator = c.is_ascii_whitespace() || c.is_ascii_punctuation();
+            index += 1;
+        }
+        
+        self.highlighting = highlighting;
     }
 }

@@ -124,6 +124,7 @@ impl Editor {
             let mut moved = false;
             match key {
                 Key::Right | Key::Down => {
+                    direction = SearchDirection::Forward;
                     editor.move_cursor(Key::Right);
                     moved = true;
                 }
@@ -136,12 +137,14 @@ impl Editor {
              } else if moved {
                 editor.move_cursor(Key::Left);
              }
+             editor.document.highlight(Some(query));
         }).unwrap_or(None);
         
         if query.is_none() {
             self.cursor_position = old_position;
             self.scroll();
         }
+        self.document.highlight(None);
     }
 
     fn process_keypress(&mut self) -> Result<(), std::io::Error> {
@@ -261,7 +264,6 @@ impl Editor {
     
     fn refresh_screen(&self) -> Result<(), std::io::Error> {
         Terminal::cursor_hide();
-        Terminal::clear_screen();
         Terminal::cursor_position(&Position::default());
 
         if self.should_quit {
