@@ -49,6 +49,7 @@ pub struct Editor {
     offset: Position,
     status_message: StatusMessage,
     quit_times: u8,
+    highlighted_word: Option<String>,
 }
 
 impl Editor {
@@ -95,6 +96,7 @@ impl Editor {
             offset: Position::default(),
             status_message: StatusMessage::from(initial_status),
             quit_times: QUIT_TIMES,
+            highlighted_word: None,
         }
     }
 
@@ -137,14 +139,14 @@ impl Editor {
              } else if moved {
                 editor.move_cursor(Key::Left);
              }
-             editor.document.highlight(Some(query));
+             editor.highlighted_word = Some(query.to_string());
         }).unwrap_or(None);
         
         if query.is_none() {
             self.cursor_position = old_position;
             self.scroll();
         }
-        self.document.highlight(None);
+        self.highlighted_word = None;
     }
 
     fn process_keypress(&mut self) -> Result<(), std::io::Error> {
@@ -262,14 +264,17 @@ impl Editor {
         self.cursor_position = Position { x , y };
     }
     
-    fn refresh_screen(&self) -> Result<(), std::io::Error> {
+    fn refresh_screen(&mut self) -> Result<(), std::io::Error> {
         Terminal::cursor_hide();
         Terminal::cursor_position(&Position::default());
 
         if self.should_quit {
             Terminal::clear_screen();
-            println!("Goodbye\r");
+            println!("Goodbye.\r");
         } else {
+            self.document.highlight(
+                &self.highlighted_word, 
+                Some(self.offset.y.saturating_add(self.terminal.size().height as usize)));
             self.draw_rows();
             self.draw_status_bar();
             self.draw_message_bar();
@@ -318,7 +323,7 @@ impl Editor {
 
         self.status_message = StatusMessage::from(String::new());
 
-        if(result.is_empty()){
+        if result.is_empty() {
             return Ok(None);
         }
 
@@ -363,7 +368,7 @@ impl Editor {
 
     fn scroll(&mut self) {
         let Position {x, y} = self.cursor_position;
-        let mut offset = &mut self.offset;
+        let offset = &mut self.offset;
         let height = self.terminal.size().height as usize;
         let width = self.terminal.size().width as usize;
 
@@ -398,7 +403,8 @@ impl Editor {
         }
 
         status = format!("{} - {} lines {}", file_name, self.document.len(), modified_message);
-        let line_indicator = format!("{}/{}", self.cursor_position.y.saturating_add(1), self.document.len());
+        let line_indicator = format!("{} | {}/{}", 
+        self.document.file_type(), self.cursor_position.y.saturating_add(1), self.document.len());
         #[allow(clippy::integer_arithmetic)]
         let status_len = status.len() + line_indicator.len();
         status.push_str(&" ".repeat(width.saturating_sub(status_len)));
@@ -414,7 +420,7 @@ impl Editor {
     fn draw_message_bar(&self) {
         Terminal::clear_current_line();
         let status = &self.status_message;
-        if(Instant::now() - status.time < Duration::new(5, 0)) {
+        if Instant::now() - status.time < Duration::new(5, 0) {
             let mut text = status.text.clone();
             text.truncate(self.terminal.size().width as usize);
             print!("{}", text);

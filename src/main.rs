@@ -12,12 +12,14 @@ mod terminal;
 mod row;
 mod document;
 mod highlighting;
+mod filetype;
 use editor::Editor;
 pub use terminal::Terminal;
 pub use editor::Position;
 pub use row::Row;
 pub use document::Document;
 pub use editor::SearchDirection;
+pub use filetype::FileType;
 
 fn main() {
     Editor::default().run();

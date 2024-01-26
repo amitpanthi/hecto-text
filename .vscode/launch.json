@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["src/editor.js"],
+            "args": ["src/a.rs"],
             "cwd": "${workspaceFolder}"
         },
         {
